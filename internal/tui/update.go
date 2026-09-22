@@ -40,6 +40,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case startLoginMsg:
+		// Only show the phone-input screen for genuinely first-time linking.
+		// If a saved session exists, main.go already called Connect() and
+		// the TUI waits for ConnectedEvent / LoggedOutEvent instead.
+		if m.waHasSavedSession {
+			return m, waitForWAEvent(m.waEvts)
+		}
 		m.mode = ModeWhatsAppPhoneInput
 		m.input, m.errMsg = "", ""
 		return m, waitForWAEvent(m.waEvts)
@@ -72,6 +78,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.wa != nil {
 			m.waOwnNumber = m.wa.GetOwnJID()
 		}
+		m.status = "WhatsApp connected"
 		return m, waitForWAEvent(m.waEvts)
 
 	case whatsapp.DisconnectedEvent:
@@ -80,7 +87,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case whatsapp.LoggedOutEvent:
 		m.waConnected = false
-		m.waLoginErr = "Logged out: " + msg.Reason
+		m.waHasSavedSession = false // session was invalidated server-side
+		m.waLoginErr = "Logged out: " + msg.Reason + "  — press W to re-link"
 		return m, waitForWAEvent(m.waEvts)
 
 	case whatsapp.FatalEvent:
@@ -192,7 +200,7 @@ func (m Model) handleTableKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if !m.wa.IsLoggedIn() {
 			m.mode = ModeWhatsAppPhoneInput
-			m.input, m.errMsg = "", ""
+			m.input, m.errMsg, m.waLoginErr = "", "", ""
 			return m, nil
 		}
 		// Already linked: let the admin (re)set which number gets alerts/commands.

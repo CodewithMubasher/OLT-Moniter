@@ -1,0 +1,22 @@
+# Build output (keep olt-monitor.exe — clients need it)
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Data directory — contains WhatsApp session keys and runtime config
+# DO NOT commit these; each machine must generate its own.
+data/whatsapp.db
+data/whatsapp.db-wal
+data/whatsapp.db-shm
+data/olts.json
+data/
+
+# Go build cache
+/go/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

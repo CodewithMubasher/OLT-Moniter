@@ -128,6 +128,12 @@ func (m Model) View() string {
 		main.WriteString("\n\n" + errStyle.Render("⚠  "+m.errMsg))
 	}
 
+	// Show transient WhatsApp errors (e.g. session expired, connect failed)
+	// on the main dashboard so the user sees them without switching screens.
+	if m.waLoginErr != "" && m.mode == ModeTable {
+		main.WriteString("\n\n" + warnStyle.Render("⚠  "+m.waLoginErr))
+	}
+
 	return m.dashboard(m.viewHeader(maxInt(0, m.width-4)), main.String(), m.viewFooter(w))
 }
 
@@ -263,13 +269,23 @@ func (m Model) viewFooter(w int) string {
 		last = m.lastTick.Format("15:04:05")
 	}
 
+	// WhatsApp status indicator
+	var waStatus string
+	switch {
+	case m.waConnected:
+		waStatus = okStyle.Render("WA ● connected")
+	case m.waHasSavedSession:
+		waStatus = warnStyle.Render("WA ○ reconnecting…")
+	default:
+		waStatus = mutedStyle.Render("WA ○ not linked")
+	}
+
 	sep := helpSepStyle.Render("   ")
 	help := strings.Join([]string{
 		helpEntry("a", "add"),
 		helpEntry("e", "edit"),
 		helpEntry("d", "toggle"),
 		helpEntry("r", "remove"),
-		helpEntry("p", "ping"),
 		helpEntry("i", "interval"),
 		helpEntry("w", "whatsapp"),
 		helpEntry("q", "quit"),
@@ -283,7 +299,7 @@ func (m Model) viewFooter(w int) string {
 		gap = 34
 	}
 	ruler := dimStyle.Render(strings.Repeat("─", gap))
-	return help + "  " + ruler + "  " + meta
+	return waStatus + "  " + help + "  " + ruler + "  " + meta
 }
 
 // --- WhatsApp pairing-code screens ---

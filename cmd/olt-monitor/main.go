@@ -21,12 +21,21 @@ import (
 )
 
 // dataDirectory resolves where config and WhatsApp session data live.
-// OLT_MONITOR_DATA overrides; otherwise ./data relative to the working dir.
+// 1. OLT_MONITOR_DATA env var overrides everything.
+// 2. Otherwise, the "data" folder next to the executable (not the working
+//    directory), so double-clicking from any folder always uses the same
+//    location.
 func dataDirectory() string {
 	if d := os.Getenv("OLT_MONITOR_DATA"); d != "" {
 		return d
 	}
-	return "data"
+	// Resolve the directory the executable itself lives in, not cwd.
+	exe, err := os.Executable()
+	if err != nil {
+		// Fallback: use cwd (shouldn't happen in normal operation).
+		return "data"
+	}
+	return filepath.Join(filepath.Dir(exe), "data")
 }
 
 func main() {
@@ -66,6 +75,19 @@ func main() {
 		waClient.SetTarget(target)
 	}
 
+	// Determine the initial WhatsApp connection state.
+	// If we have a saved session (DB has device data), try to reconnect
+	// silently instead of asking for re-link.
+	waHasSavedSession := waClient.HasSavedSession(ctx)
+	waAutoConnected := false
+	if waClient.IsLoggedIn() {
+		if err := waClient.Connect(); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: WhatsApp connect failed: %v\n", err)
+		} else {
+			waAutoConnected = true
+		}
+	}
+
 	// Fan out WhatsApp events to two independent consumers: the TUI (QR /
 	// connection status) and the command loop (inbound messages). Neither
 	// reads waClient.EventChan directly to avoid racing on that channel.
@@ -82,16 +104,10 @@ func main() {
 	cmdHandler := commands.NewHandler(cfg, engine)
 	go whatsapp.RunCommandLoop(ctx, waClient, cmdEvents, cmdHandler, nil)
 
-	// If we already have a linked session, connect now instead of waiting
-	// for the TUI to trigger login (login is only for first run).
-	if waClient.IsLoggedIn() {
-		if err := waClient.Connect(); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: WhatsApp connect failed: %v\n", err)
-		}
-	}
-
 	// --- TUI ---
 	model := tui.New(cfg, engine, waClient, tuiEvents)
+	model.SetWAConnected(waAutoConnected)
+	model.SetWAHasSavedSession(waHasSavedSession)
 	program := tea.NewProgram(model, tea.WithAltScreen())
 
 	// Feed every completed ping into the TUI so background monitoring

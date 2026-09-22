@@ -53,11 +53,12 @@ type Model struct {
 	formIP   string
 
 	// WhatsApp linking state, mirrors nightcode's own login flow.
-	waConnected  bool
-	waOwnNumber  string
-	waPhoneInput string
-	waPairCode   string
-	waLoginErr   string
+	waConnected     bool
+	waOwnNumber     string
+	waPhoneInput    string
+	waPairCode      string
+	waLoginErr      string
+	waHasSavedSession bool // true if DB has device data from a prior linking
 
 	width, height int
 	quitting      bool
@@ -81,8 +82,25 @@ func New(cfg *oltconfig.Manager, engine *monitor.Engine, wa *whatsapp.Client, wa
 	}
 }
 
+// SetWAConnected is called from main after a successful auto-connect so
+// the TUI starts in the "connected" state without waiting for an event.
+func (m *Model) SetWAConnected(connected bool) {
+	m.waConnected = connected
+}
+
+// SetWAHasSavedSession tells the TUI that a WhatsApp session exists on
+// disk from a previous linking. Used to show "reconnecting…" instead of
+// "press W to link" on startup.
+func (m *Model) SetWAHasSavedSession(has bool) {
+	m.waHasSavedSession = has
+}
+
 func (m Model) Init() tea.Cmd {
-	needsLogin := m.wa != nil && !m.wa.IsLoggedIn()
+	// Only trigger the auto-login flow if the user has NEVER linked before
+	// (no saved session in the DB). If a session exists, main.go already
+	// called Connect(); the TUI will show "reconnecting…" until a
+	// ConnectedEvent or LoggedOutEvent arrives.
+	needsLogin := m.wa != nil && !m.wa.IsLoggedIn() && !m.waHasSavedSession
 	return tea.Batch(
 		waitForWAEvent(m.waEvts),
 		tickEvery(),

@@ -231,6 +231,21 @@ func (c *Client) IsLoggedIn() bool {
 	return c.WAClient != nil && c.WAClient.Store != nil && c.WAClient.Store.ID != nil
 }
 
+// HasSavedSession checks whether the on-disk database contains device
+// credentials from a previous linking. Returns true even if the session
+// has since been invalidated by WhatsApp server-side — the app should
+// still try to reconnect first rather than immediately asking for re-link.
+func (c *Client) HasSavedSession(ctx context.Context) bool {
+	if c.store == nil {
+		return false
+	}
+	dev, err := c.store.GetFirstDevice(ctx)
+	if err != nil || dev == nil {
+		return false
+	}
+	return dev.ID != nil
+}
+
 func (c *Client) Connect() error {
 	if c.WAClient == nil {
 		return errors.New("client not initialized")
