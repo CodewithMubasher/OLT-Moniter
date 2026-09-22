@@ -1,0 +1,42 @@
+{
+  "olts": [
+    {
+      "name": "python",
+      "ip": "127.0.0.1:8000",
+      "enabled": true,
+      "status": "down",
+      "consecutive_fail": 31,
+      "last_check": "2026-09-22T16:28:47.5878633+05:00",
+      "last_success": "2026-09-22T09:44:47.5920559+05:00",
+      "last_failure": "2026-09-22T16:28:47.5878633+05:00",
+      "last_error": "TCP connection: dial tcp 127.0.0.1:8000: connectex: No connection could be made because the target machine actively refused it."
+    },
+    {
+      "name": "Google",
+      "ip": "8.8.8.8",
+      "enabled": true,
+      "status": "up",
+      "consecutive_fail": 0,
+      "last_check": "2026-09-22T16:28:47.8982595+05:00",
+      "last_success": "2026-09-22T16:28:47.8982595+05:00",
+      "last_failure": "2026-09-22T16:06:20.2683827+05:00",
+      "last_rtt_ms": 42
+    },
+    {
+      "name": "cloudflare",
+      "ip": "1.1.1.1",
+      "enabled": true,
+      "status": "up",
+      "consecutive_fail": 0,
+      "last_check": "2026-09-22T16:28:47.8757563+05:00",
+      "last_success": "2026-09-22T16:28:47.8757563+05:00",
+      "last_failure": "2026-09-22T16:06:20.2754298+05:00",
+      "last_rtt_ms": 27
+    }
+  ],
+  "interval_seconds": 1,
+  "failure_threshold": 3,
+  "whatsapp": {
+    "target_number": ""
+  }
+}
