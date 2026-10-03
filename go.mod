@@ -5,6 +5,7 @@ go 1.26.5
 require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/mxschmitt/playwright-go v0.6201.1
 	go.mau.fi/whatsmeow v0.0.0-20260919103545-0057a822e79a
 	modernc.org/sqlite v1.59.0
 )
@@ -21,9 +22,11 @@ require (
 	github.com/clipperhouse/stringish v0.1.1 // indirect
 	github.com/clipperhouse/uax29/v2 v2.5.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/deckarep/golang-set/v2 v2.8.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/elliotchance/orderedmap/v3 v3.1.0 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
+	github.com/go-stack/stack v1.8.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect

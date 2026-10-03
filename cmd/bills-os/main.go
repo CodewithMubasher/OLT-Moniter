@@ -1,6 +1,8 @@
-// Command bills-os runs the Bills OS TUI: link one WhatsApp account and
-// auto-reply to every incoming message with a message you configure —
-// changeable at any time from the TUI, no restart needed.
+// Command bills-os runs the Bills OS TUI: it opens the ISP billing portal
+// in Chrome, links one WhatsApp account (only asks when never linked
+// before), lets the operator pick which chats to monitor, then captures
+// every message from those chats into data/monitored_messages.json.
+// No replies are ever sent in this phase.
 package main
 
 import (
@@ -13,16 +15,19 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"bills-os/internal/browser"
 	"bills-os/internal/config"
+	"bills-os/internal/monitor"
+	"bills-os/internal/portal"
 	"bills-os/internal/tui"
 	"bills-os/internal/whatsapp"
 )
 
 // dataDirectory resolves where config and WhatsApp session data live.
-// 1. BILLS_OS_DATA env var overrides everything.
-// 2. Otherwise, the "data" folder next to the executable (not the working
-//    directory), so double-clicking from any folder always uses the same
-//    location.
+//  1. BILLS_OS_DATA env var overrides everything.
+//  2. Otherwise, the "data" folder next to the executable (not the working
+//     directory), so double-clicking from any folder always uses the same
+//     location.
 func dataDirectory() string {
 	if d := os.Getenv("BILLS_OS_DATA"); d != "" {
 		return d
@@ -47,7 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// --- Config: single source of truth for the auto-reply message ---
+	// --- Config: portal URL + monitored-chat selection ---
 	cfg := config.NewManager(dataDir)
 	if _, err := cfg.Load(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to load config: %v\n", err)
@@ -56,6 +61,16 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+
+	// --- ISP portal in Chromium (Playwright, persistent profile) ---
+	// Runs before the TUI starts so launch errors are visible on stderr.
+	// The profile in <data>/browser-data keeps the portal login across
+	// restarts; later phases drive the page through br.Page().
+	br, err := browser.Launch(ctx, cfg.PortalURL(), dataDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: could not open portal browser: %v\n", err)
+	}
+	defer br.Close()
 
 	// --- WhatsApp client ---
 	waClient := whatsapp.NewClient(dataDir)
@@ -78,25 +93,27 @@ func main() {
 		}
 	}
 
-	// Fan out WhatsApp events to two independent consumers: the TUI
-	// (linking/connection status) and the auto-reply loop (inbound
-	// messages). Neither reads waClient.EventChan directly to avoid racing
-	// on that channel.
+	// Tap the event channel through a fan-out so additional consumers
+	// (e.g. the upcoming browser automation) can subscribe without ever
+	// racing the TUI on waClient.EventChan.
 	fanOut := whatsapp.NewEventFanOut()
 	tuiEvents := fanOut.NewSubscriber()
-	replyEvents := fanOut.NewSubscriber()
 	fanOut.Start(ctx, waClient)
 
-	// --- Auto-reply: reply to every incoming message with the configured
-	// text, unless replies are paused. The settings are re-read per message,
-	// so TUI edits (and pause/resume) apply to the very next message. ---
-	go whatsapp.RunAutoReplyLoop(ctx, waClient, replyEvents, func() (string, bool) {
-		s := cfg.Snapshot()
-		return s.AutoReplyMessage, !s.AutoReplyPaused
-	})
+	// --- Message capture: only selected chats are appended to the JSON
+	// log; nothing is ever sent back. ---
+	logger := monitor.NewLogger(dataDir)
+
+	// --- Portal automation: opens customers in the browser when monitored
+	// messages mention a username (word with an underscore). ---
+	var portalRunner *portal.Runner
+	if br != nil {
+		portalRunner = portal.NewRunner(br.Page(), cfg.PortalURL(), dataDir)
+		portalRunner.Start(ctx)
+	}
 
 	// --- TUI ---
-	model := tui.New(cfg, waClient, tuiEvents)
+	model := tui.New(cfg, waClient, tuiEvents, logger, portalRunner)
 	model.SetWAConnected(waAutoConnected)
 	model.SetWAHasSavedSession(waHasSavedSession)
 	program := tea.NewProgram(model, tea.WithAltScreen())

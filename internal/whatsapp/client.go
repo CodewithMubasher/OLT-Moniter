@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -41,16 +42,24 @@ type Client struct {
 	sentMsgIDs map[string]struct{}
 	sentOrder  []string
 
+	// chatNames caches display names (group subject / contact name) keyed
+	// by chat JID so incoming messages don't hit the network every time.
+	namesMu       sync.RWMutex
+	chatNames     map[types.JID]string
+	nameResolving map[types.JID]bool // group lookups already in flight
+
 	closeOnce sync.Once
 	done      chan struct{}
 }
 
 func NewClient(dataDir string) *Client {
 	return &Client{
-		dataDir:    dataDir,
-		EventChan:  make(chan any, eventBufferSize),
-		sentMsgIDs: make(map[string]struct{}),
-		done:       make(chan struct{}),
+		dataDir:       dataDir,
+		EventChan:     make(chan any, eventBufferSize),
+		sentMsgIDs:    make(map[string]struct{}),
+		chatNames:     make(map[types.JID]string),
+		nameResolving: make(map[types.JID]bool),
+		done:          make(chan struct{}),
 	}
 }
 
@@ -175,21 +184,107 @@ func (c *Client) resolveSenderPhone(info types.MessageInfo) string {
 	return ""
 }
 
+// rememberChatName caches a resolved display name for a chat.
+func (c *Client) rememberChatName(jid types.JID, name string) {
+	if name == "" {
+		return
+	}
+	c.namesMu.Lock()
+	c.chatNames[jid] = name
+	c.namesMu.Unlock()
+}
+
+// cachedChatName returns a previously resolved display name, or "".
+func (c *Client) cachedChatName(jid types.JID) string {
+	c.namesMu.RLock()
+	name := c.chatNames[jid]
+	c.namesMu.RUnlock()
+	return name
+}
+
+// chatName resolves the display name for a chat without blocking the
+// event loop: contacts come from the local store (fast); unknown groups
+// are resolved in the background (network) and the short JID user part is
+// shown until the lookup completes.
+func (c *Client) chatName(jid types.JID, isGroup bool) string {
+	if name := c.cachedChatName(jid); name != "" {
+		return name
+	}
+
+	if !isGroup {
+		if c.WAClient != nil && c.WAClient.Store != nil && c.WAClient.Store.Contacts != nil {
+			ci, err := c.WAClient.Store.Contacts.GetContact(context.Background(), jid)
+			if err == nil {
+				if name := firstNonEmpty(ci.FullName, ci.PushName, ci.BusinessName); name != "" {
+					c.rememberChatName(jid, name)
+					return name
+				}
+			}
+		}
+		return "+" + jid.User
+	}
+
+	// Group subject isn't known yet: fetch it once, in the background.
+	c.namesMu.Lock()
+	inflight := c.nameResolving[jid]
+	c.nameResolving[jid] = true
+	c.namesMu.Unlock()
+	if !inflight && c.WAClient != nil {
+		go c.resolveGroupName(jid)
+	}
+	return jid.User // short id shown until the background lookup caches the name
+}
+
+// resolveGroupName fetches a group's subject once and caches it. Runs in
+// its own goroutine so the whatsmeow event handler never blocks on a
+// network round-trip.
+func (c *Client) resolveGroupName(jid types.JID) {
+	defer func() {
+		c.namesMu.Lock()
+		delete(c.nameResolving, jid)
+		c.namesMu.Unlock()
+	}()
+	if c.WAClient == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	g, err := c.WAClient.GetGroupInfo(ctx, jid)
+	if err != nil || g == nil {
+		return
+	}
+	c.rememberChatName(jid, g.Name)
+}
+
+// handleIncomingMessage emits EVERY inbound message (direct chats and
+// groups alike) with enough chat context for the monitor to filter it.
+// Filtering by the operator's selection happens in the TUI, not here.
 func (c *Client) handleIncomingMessage(msg *events.Message) {
 	if msg.Info.IsFromMe {
 		c.markSent(msg.Info.ID)
 		return
 	}
-	if c.wasSent(msg.Info.ID) || msg.Info.IsGroup {
+	if c.wasSent(msg.Info.ID) {
+		return
+	}
+	// Only real chats: ignore status broadcasts, newsletter updates, etc.
+	if !msg.Info.IsGroup && msg.Info.Chat.Server != types.DefaultUserServer {
 		return
 	}
 
-	// Bills OS replies to everyone who messages this account (groups and
-	// our own echo are already excluded above).
 	sender := c.resolveSenderPhone(msg.Info)
+	if sender == "" {
+		sender = msg.Info.Sender.User
+	}
 	if sender == "" {
 		return
 	}
+	senderLabel := "+" + sender
+	if msg.Info.Sender.Server != types.DefaultUserServer {
+		// LID (hidden addressing) — show the raw id, not a fake "+" number.
+		senderLabel = sender
+	}
+	senderName := c.contactName(sender)
 
 	text := ""
 	if m := msg.Message; m != nil {
@@ -203,12 +298,101 @@ func (c *Client) handleIncomingMessage(msg *events.Message) {
 	}
 
 	c.emit(MessageReceivedEvent{
-		Sender:    "+" + sender,
-		ReplyTo:   msg.Info.Chat,
-		Text:      text,
-		MsgID:     msg.Info.ID,
-		Timestamp: msg.Info.Timestamp,
+		Sender:     senderLabel,
+		SenderName: senderName,
+		Chat:       msg.Info.Chat,
+		ChatName:   c.chatName(msg.Info.Chat, msg.Info.IsGroup),
+		IsGroup:    msg.Info.IsGroup,
+		Text:       text,
+		MsgID:      msg.Info.ID,
+		Timestamp:  msg.Info.Timestamp,
 	}, true)
+}
+
+// contactName resolves phone digits to the saved WhatsApp contact name
+// ("Humaira" for a saved +923445561767); "" when nothing is stored.
+func (c *Client) contactName(digits string) string {
+	if digits == "" || c.WAClient == nil || c.WAClient.Store == nil || c.WAClient.Store.Contacts == nil {
+		return ""
+	}
+	jid := types.NewJID(digits, types.DefaultUserServer)
+	ci, err := c.WAClient.Store.Contacts.GetContact(context.Background(), jid)
+	if err != nil {
+		return ""
+	}
+	for _, name := range []string{ci.FullName, ci.FirstName, ci.BusinessName, ci.PushName} {
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// ChatInfo is one selectable chat (a group or a direct contact).
+type ChatInfo struct {
+	JID     string // full JID, e.g. "123@g.us" / "92300@s.whatsapp.net"
+	Name    string // display name (group subject or contact name)
+	IsGroup bool
+}
+
+// ListChats returns every group the account is in plus every known
+// contact, groups first. Requires a live connection for the group list;
+// contacts come from the local store. Group names are cached for message
+// filtering/display.
+func (c *Client) ListChats(ctx context.Context) ([]ChatInfo, error) {
+	if c.WAClient == nil {
+		return nil, errors.New("client not initialized")
+	}
+
+	groups, err := c.WAClient.GetJoinedGroups(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list groups: %w", err)
+	}
+	out := make([]ChatInfo, 0, len(groups))
+	for _, g := range groups {
+		name := g.Name
+		if name == "" {
+			name = "group " + g.JID.User
+		}
+		c.rememberChatName(g.JID, name)
+		out = append(out, ChatInfo{JID: g.JID.String(), Name: name, IsGroup: true})
+	}
+
+	// Contacts are best effort: a missing address book shouldn't block
+	// group selection.
+	if c.WAClient.Store != nil && c.WAClient.Store.Contacts != nil {
+		if contacts, err := c.WAClient.Store.Contacts.GetAllContacts(ctx); err == nil {
+			for jid, ci := range contacts {
+				if jid.Server != types.DefaultUserServer {
+					continue
+				}
+				name := firstNonEmpty(ci.FullName, ci.PushName, ci.BusinessName)
+				if name == "" {
+					name = "+" + jid.User
+				}
+				c.rememberChatName(jid, name)
+				out = append(out, ChatInfo{JID: jid.String(), Name: name, IsGroup: false})
+			}
+		}
+	}
+
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].IsGroup != out[j].IsGroup {
+			return out[i].IsGroup
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
+}
+
+// firstNonEmpty returns the first non-blank argument.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 func (c *Client) IsLoggedIn() bool {
@@ -326,11 +510,14 @@ type PairSuccessEvent struct{ JID string }
 type PairErrorEvent struct{ Err error }
 type FatalEvent struct{ Err error }
 type MessageReceivedEvent struct {
-	Sender    string
-	ReplyTo   types.JID
-	Text      string
-	MsgID     string
-	Timestamp time.Time
+	Sender     string    // "+<phone>" (or raw id for LID senders)
+	SenderName string    // saved contact name, "" when unknown
+	Chat       types.JID // chat the message came from (group or direct)
+	ChatName   string    // display name, "" until resolved
+	IsGroup    bool
+	Text       string
+	MsgID      string
+	Timestamp  time.Time
 }
 
 // DigitsOnly strips everything except 0-9.

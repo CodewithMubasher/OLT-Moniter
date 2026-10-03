@@ -1,40 +1,36 @@
 package tui
 
-import (
-	"math/rand"
-	"time"
+// maxLogRows bounds the in-memory message log the table renders. The JSON
+// file keeps everything; only the tail is held for display.
+const maxLogRows = 500
+
+// Status values shown in the STATUS column. Rows start as WAIT and are
+// updated to DONE / PARTIAL / FAIL by portal.ResultEvent as the browser
+// flow runs: PARTIAL = profile opened but required fields were missing.
+const (
+	StatusWait    = "WAIT"
+	StatusDone    = "DONE"
+	StatusPartial = "PARTIAL"
+	StatusFail    = "FAIL"
 )
 
-// TableRow is one line of the card-3 table. The data is fake for now — a
-// generator stands in until the real data source is wired in later.
-type TableRow struct {
-	Customer string
-	Package  string
-	Panel    string // "NBB" or "PACE"
-	Status   string // "DONE", "PENDING", "ACTIVE"
+// LogRow is one line of the message-log table: a captured message from a
+// monitored chat that mentioned at least one customer username.
+type LogRow struct {
+	ID        int      // running row number (1, 2, 3, …)
+	Time      string   // HH:MM
+	Sender    string   // contact name when saved, otherwise "+<phone>"
+	Text      string   // message body (truncated for display only)
+	Panel     string   // panel label, e.g. "PACE"
+	Status    string   // WAIT → DONE / FAIL as the portal flow runs
+	Usernames []string // extracted usernames (portal job keys)
 }
 
-// fakeRows builds n rows of plausible-looking billing data so the table
-// layout can be developed before the real data source exists.
-func fakeRows(n int) []TableRow {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	customers := []string{
-		"hp_david_mcolony", "hp_ahmed_ravi", "hp_sara_khan",
-		"hp_bilal_sheikh", "hp_usman_tariq", "hp_faisal_nadeem",
-		"hp_zain_mehmood", "hp_ali_hassan",
-	}
-	packages := []string{"PKG5MB", "PKG10MB", "PKG20MB", "PKG50MB"}
-	panels := []string{"NBB", "PACE"}
-	statuses := []string{"DONE", "PENDING", "ACTIVE"}
-
-	rows := make([]TableRow, 0, n)
-	for i := 0; i < n; i++ {
-		rows = append(rows, TableRow{
-			Customer: customers[i%len(customers)],
-			Package:  packages[r.Intn(len(packages))],
-			Panel:    panels[r.Intn(len(panels))],
-			Status:   statuses[r.Intn(len(statuses))],
-		})
+// appendLogRow adds a row and trims the window to maxLogRows.
+func appendLogRow(rows []LogRow, row LogRow) []LogRow {
+	rows = append(rows, row)
+	if len(rows) > maxLogRows {
+		rows = rows[len(rows)-maxLogRows:]
 	}
 	return rows
 }

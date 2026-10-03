@@ -2,8 +2,8 @@ package whatsapp
 
 // bridge.go adds Bills OS-specific glue on top of the WhatsApp client
 // (client.go, login.go hold the pairing, reconnect, and event-draining
-// logic). It intentionally does not touch that logic — only adds a
-// convenience sender and the auto-reply loop.
+// logic). It intentionally does not touch that logic — only adds the
+// event fan-out and a convenience sender.
 
 import (
 	"context"
@@ -14,9 +14,9 @@ import (
 
 // NewEventFanOut creates a fan-out: one goroutine reads c.EventChan and
 // copies every event to each subscriber channel returned by NewSubscriber,
-// so multiple independent consumers (the TUI, for connection/linking
-// display, and the auto-reply loop, for inbound messages) each see every
-// event. Reading c.EventChan directly from more than one place would race,
+// so multiple independent consumers (the TUI, for linking/connection
+// display and monitoring, plus future automation) each see every event.
+// Reading c.EventChan directly from more than one place would race,
 // since a channel read is a one-time hand-off to whichever goroutine wins
 // it — that is what the fan-out avoids.
 //
@@ -74,7 +74,8 @@ func (e *EventFanOut) Start(ctx context.Context, c *Client) { go e.f.run(ctx, c)
 
 // SendTo sends a text message to a phone number in international format
 // (e.g. "+923001234567"), building the JID the same way the rest of
-// whatsmeow expects.
+// whatsmeow expects. The monitoring phase never calls it (no replies);
+// it exists for the upcoming billing-automation actions.
 func (c *Client) SendTo(ctx context.Context, target, text string) error {
 	digits := DigitsOnly(target)
 	if digits == "" {
@@ -83,33 +84,4 @@ func (c *Client) SendTo(ctx context.Context, target, text string) error {
 	jid := types.NewJID(digits, types.DefaultUserServer)
 	_, err := c.SendTextMessage(ctx, jid, text)
 	return err
-}
-
-// RunAutoReplyLoop consumes events from a subscriber channel (see
-// EventFanOut.NewSubscriber) and replies to every inbound message with the
-// configured auto-reply text. getReply is called once per message so edits
-// made in the TUI apply immediately; returning ok=false (auto-reply
-// switched off, or no message set) skips the reply. All other event types
-// are ignored here — the TUI's own loop, reading the same tapped channel,
-// handles linking/connection display.
-func RunAutoReplyLoop(ctx context.Context, c *Client, events <-chan any, getReply func() (reply string, enabled bool)) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case raw, ok := <-events:
-			if !ok {
-				return
-			}
-			evt, ok := raw.(MessageReceivedEvent)
-			if !ok {
-				continue
-			}
-			reply, enabled := getReply()
-			if !enabled || reply == "" {
-				continue
-			}
-			_ = c.SendTo(ctx, evt.Sender, reply)
-		}
-	}
 }

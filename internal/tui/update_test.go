@@ -8,7 +8,7 @@ import (
 )
 
 func TestSpaceKeyDoesNotInsertNULIntoMessage(t *testing.T) {
-	m := Model{mode: ModeEditMessage, input: "Hello"}
+	m := Model{mode: ModeWhatsAppPhoneInput, input: "Hello"}
 	next, _ := m.handleTextInputKey(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{0}})
 	updated := next.(Model)
 
